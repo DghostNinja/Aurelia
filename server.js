@@ -246,10 +246,33 @@ route('GET', '/api/auth/session', (req, res) => {
   const u = users[email];
   send(res, 200, {
     authorized: true,
-    account: { email, name: u.name, initials: u.initials, role: u.role },
+    account: { email, name: u.name, initials: u.initials, role: sess.payload.role || u.role },
     balance: balances[email],
     transactions: ledger[email].slice(0, 3),
   });
+});
+
+// Legacy portal — login response carries NO session token. The client must
+// request a token in a separate exchange. Failure paths leak nothing.
+route('POST', '/api/auth/signin/legacy', (req, res, body) => {
+  const u = users[body.email];
+  if (!u || u.password !== body.password) {
+    return send(res, 401, { success: false, message: 'Invalid email or password.' });
+  }
+  send(res, 200, {
+    success: true,
+    account: { email: u.email, name: u.name, role: u.role, initials: u.initials },
+  });
+});
+
+// Session exchange — issues a token using the role the *client* supplied.
+// No server-side grant check: tamper the role and the token carries it.
+route('POST', '/api/auth/exchange', (req, res, body) => {
+  const u = users[body.email];
+  if (!u) return send(res, 404, { success: false, message: 'Unknown client.' });
+  const role = body.role || u.role;
+  const token = sign({ sub: u.email, via: 'exchange', name: u.name, role }, 900, 'legacy');
+  send(res, 200, { success: true, token, account: { email: u.email, name: u.name, role } });
 });
 
 // ============================================================

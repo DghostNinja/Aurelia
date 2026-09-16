@@ -7,6 +7,8 @@
   const state = {
     proxy: false,      // built-in interceptor OFF by default -> use Burp/ZAP
     auth: null,        // authenticated session token (from Sign in)
+    session: null,     // last account object returned after signing in
+    portal: 'primary', // 'primary' | 'legacy' sign-in flow
     tokens: {},        // per-flow session tokens (keyed by flow id)
   };
 
@@ -155,6 +157,12 @@
     const r = currentRoute();
     const fn = routes[r] || routes['/'];
     Promise.resolve(fn()).then(() => {
+      const navAuth = $('#nav-auth');
+      if (navAuth) {
+        const authed = !!state.auth;
+        navAuth.textContent = authed ? 'Account' : 'Sign in';
+        navAuth.dataset.route = authed ? '/dashboard' : '/signin';
+      }
       $$('#navbar a').forEach((a) => a.classList.toggle('active', a.dataset.route === r));
       $('#view').scrollTop = 0;
       window.scrollTo(0, 0);
@@ -223,6 +231,42 @@
     });
   }
 
+  const CASES = [
+    { id: 1, title: 'Status code flip', group: 'Response-level trust', diff: 'Apprentice', route: '/signin', ico: '◈',
+      desc: 'The client trusts only the status line. A failed login still ships a signed JWT inside the 401 body — flipping 401 → 200 authenticates you.' },
+    { id: 2, title: 'Envelope + body trust', group: 'Response-level trust', diff: 'Apprentice', route: '/access', ico: '▲',
+      desc: 'The client validates the status line AND a body flag. Flipping the status to 200 alone does nothing — you must rewrite the error body too.' },
+    { id: 3, title: 'JWT that ignores logout', group: 'Session lifecycle', diff: 'Practitioner', route: '/sessions', ico: '◫',
+      desc: 'Signing out adds the token to a revoked set the server never checks. Issue a session, sign out, then keep using the same token.' },
+    { id: 4, title: 'OTP response manipulation', group: 'Second factor', diff: 'Apprentice', route: '/verify', ico: '⑂',
+      desc: 'A wrong code returns verified:false but still ships a valid sessionToken. Flip the flag — or replay the same code — and the session holds.' },
+    { id: 5, title: 'Device binding bypass', group: 'Second factor', diff: 'Apprentice', route: '/devices', ico: '⌘',
+      desc: 'An unrecognised device still receives a session grant with match:false. Flip match → true and a device that was never enrolled is bound.' },
+    { id: 6, title: 'Settlement before verdict', group: 'Transactions', diff: 'Practitioner', route: '/transfers', ico: '⇄',
+      desc: 'Over-limit transfers execute server-side, then the API returns 403 with a receipt. The money moved before the verdict was written.' },
+    { id: 7, title: 'Expired JWT accepted', group: 'Token integrity', diff: 'Apprentice', route: '/recovery', ico: '◯',
+      desc: 'Token expiry is never checked. A recovery token that already expired is still honoured when presented.' },
+    { id: 8, title: 'Unsigned alg:none JWT', group: 'Token integrity', diff: 'Expert', route: '/support', ico: '◍',
+      desc: 'The server accepts tokens with an empty signature. A forged admin token works anywhere it is presented.' },
+  ];
+
+  function caseHead(id) {
+    const c = CASES.find((x) => x.id === id);
+    return `
+      <div class="case-head">
+        <a class="back" data-route="/" title="All exercises">← Labs</a>
+        <div class="case-head-body">
+          <div class="case-head-kicker">Case ${String(id).padStart(2, '0')} · ${c.group}</div>
+          <h1>${esc(c.title)}</h1>
+          <p>${esc(c.desc)}</p>
+          <div class="case-pills">
+            <span class="pill diff">${esc(c.diff)}</span>
+            <span class="pill">Use the Interceptor (or own proxy) to edit the response</span>
+          </div>
+        </div>
+      </div>`;
+  }
+
   function tokenBlock(label, id, value) {
     return `
       <div class="field">
@@ -235,36 +279,39 @@
   }
 
   // ---------------------------------------------------------------
-  // OVERVIEW
+  // LABS INDEX  (PortSwigger-style case list)
   // ---------------------------------------------------------------
-  routes['/'] = () => {
+  routes['/'] = async () => {
+    let done = {};
+    try { done = Object.fromEntries((await (await fetch('/api/meta')).json()).cases.map((c) => [c.id, c.done])); } catch {}
+
+    let solved = Object.values(done).filter(Boolean).length;
     view(`
-      <div class="hero">
-        <div class="eyebrow">Private banking · est. 1987</div>
-        <h1>Wealth, kept<br>quietly <em>yours.</em></h1>
-        <p>Aurelia was built for people whose money should never make a sound. Every session, every transfer — handled with a discretion few banks can measure.</p>
+      <div class="sec-head" style="margin-top:16px">
+        <h1>Response Integrity Labs</h1>
+        <p>Every exercise reproduces a real response-handling flaw observed in production banking APIs. Open one and demonstrate the exploit with the built-in editor — or your own proxy.</p>
       </div>
 
-      <div class="sec-head" style="margin-top:52px"><h2 class="sec-title">Client services</h2><p>Everything you would expect from a relationship bank — handled in one place.</p></div>
-      <div class="svc-grid">
-        <a class="svc" data-route="/signin"><div class="svc-ico">◈</div><h4>Sign in</h4><p>Restore access to your private area.</p></a>
-        <a class="svc" data-route="/transfers"><div class="svc-ico">⇄</div><h4>Transfers</h4><p>Move money between treasuries and partners.</p></a>
-        <a class="svc" data-route="/verify"><div class="svc-ico">⑂</div><h4>Two-step verification</h4><p>Confirm your identity with a security code.</p></a>
-        <a class="svc" data-route="/devices"><div class="svc-ico">⌘</div><h4>Devices</h4><p>Authorise and manage enrolled devices.</p></a>
-        <a class="svc" data-route="/sessions"><div class="svc-ico">◫</div><h4>Sessions</h4><p>Review active sessions and access tokens.</p></a>
-        <a class="svc" data-route="/access"><div class="svc-ico">▲</div><h4>Higher limits</h4><p>Request an increased daily allowance.</p></a>
+      <div class="case-grid">
+        ${CASES.map((c) => `
+          <a class="case-card" data-route="${c.route}">
+            <div class="case-num">${String(c.id).padStart(2, '0')}</div>
+            <div class="case-info">
+              <div class="case-title">${esc(c.title)}${done[c.id] ? ' <span class="check">✓</span>' : ''}</div>
+              <div class="case-meta"><span>${esc(c.group)}</span><span class="dot-sep">·</span><span>${esc(c.diff)}</span></div>
+              <div class="case-desc">${esc(c.desc)}</div>
+            </div>
+            <div class="case-go">Open →</div>
+          </a>`).join('')}
       </div>
 
-      <div class="stat-band">
-        <div class="stat"><div class="v">12.4b</div><div class="k">Assets under care</div></div>
-        <div class="stat"><div class="v">98</div><div class="k">Countries reached</div></div>
-        <div class="stat"><div class="v">0.04%</div><div class="k">Management fee</div></div>
-        <div class="stat"><div class="v">24/7</div><div class="k">Client desk</div></div>
+      <div class="sec-head" style="margin-top:48px">
+        <h2 class="sec-title">Environment</h2>
+        <p>${solved} of ${CASES.length} exercises exploited this session. Credentials below drive every flow.</p>
       </div>
 
       <div class="env-card">
-        <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Demo environment</div>
-        <p class="muted tiny mb8">Client credentials for testing. Data resets on restart.</p>
+        <p class="muted tiny mb8">Client credentials for the exercises. Data resets on restart.</p>
         <div class="env-table">
           <div class="env-row">
             <span class="mono">alice@velare.io</span>
@@ -288,14 +335,15 @@
       </div>
 
       <div class="footer-note">
-        <span class="muted tiny">Demo environment · data resets on reload</span>
+        <span class="muted tiny">All state resets with the button below.</span>
         <button class="btn ghost xs" id="reset-lab">Reset data</button>
       </div>`);
 
     $('#reset-lab').addEventListener('click', async () => {
       await fetch('/api/meta/reset', { method: 'POST' });
       state.tokens = {};
-      toast('Demo data reset.', 'ok');
+      toast('Lab data reset.', 'ok');
+      go('/');
     });
   };
 
@@ -304,9 +352,13 @@
   // ---------------------------------------------------------------
   routes['/signin'] = () => {
     view(`
+      ${caseHead(1)}
       <div class="auth-wrap">
-        ${sectionHead('Sign in', 'Enter your credentials to continue.')}
         <div class="card auth-card">
+          <div class="seg" id="portal-seg">
+            <button type="button" class="seg-btn active" data-portal="primary">Primary portal</button>
+            <button type="button" class="seg-btn" data-portal="legacy">Legacy portal</button>
+          </div>
           <div class="err" id="si-err"></div>
           <div class="field">
             <label>Client email</label>
@@ -315,8 +367,15 @@
           <div class="field">${pwField('si-pass', 'Password')}</div>
           <button class="btn primary" id="btn-si" style="width:100%">Sign in</button>
           <div id="si-result"></div>
+          <div id="si-exchange" class="hidden"></div>
         </div>
       </div>`);
+    $$('#portal-seg .seg-btn').forEach((b) => b.addEventListener('click', () => {
+      state.portal = b.dataset.portal;
+      clearMsgs('#si-err', '#si-result');
+      $('#si-exchange').classList.add('hidden');
+      $$('#portal-seg .seg-btn').forEach((x) => x.classList.toggle('active', x === b));
+    }));
     $('#btn-si').addEventListener('click', doSignIn);
     $('#si-pass').addEventListener('keydown', (e) => e.key === 'Enter' && doSignIn());
     ['#si-email', '#si-pass'].forEach((sel) =>
@@ -326,27 +385,53 @@
   async function doSignIn() {
     const email = $('#si-email').value.trim().toLowerCase();
     const password = $('#si-pass').value;
+    const legacy = state.portal === 'legacy';
     clearMsgs('#si-err', '#si-result');
+    $('#si-exchange').classList.add('hidden');
     const err = $('#si-err');
     if (!password) { err.textContent = 'Enter your password.'; err.style.display = 'block'; return; }
     const btn = $('#btn-si'); btn.disabled = true; btn.textContent = 'Signing in…';
+
+    if (legacy) {
+      const r = await api('POST', '/api/auth/signin/legacy', { email, password });
+      btn.disabled = false; btn.textContent = 'Sign in';
+      if (r.data.success && r.data.account) {
+        state.session = r.data.account;
+        $('#si-result').innerHTML = successCard('Credentials accepted.', [
+          ['Client', esc(r.data.account.name)],
+          ['Portal', 'Legacy'],
+          ['Session token', 'Not issued — requested separately'],
+        ]);
+        const x = $('#si-exchange'); x.classList.remove('hidden');
+        x.innerHTML = `<button class="btn gold" id="btn-ex" style="width:100%">Begin session</button>`;
+        $('#btn-ex').addEventListener('click', async () => {
+          const ex = await api('POST', '/api/auth/exchange', { email, role: state.session.role });
+          if (ex.data.token) {
+            state.auth = ex.data.token;
+            state.session = ex.data.account;
+            go('/dashboard');
+          } else {
+            err.textContent = ex.data.message || 'Exchange failed.';
+            err.style.display = 'block';
+          }
+        });
+      } else {
+        err.textContent = r.data.message || (r.ok ? 'No session token was returned.' : 'Unable to sign in.');
+        err.style.display = 'block';
+      }
+      return;
+    }
+
+    // primary portal: session token ships inside the response body
     const r = await api('POST', '/api/auth/signin', { email, password });
     btn.disabled = false; btn.textContent = 'Sign in';
 
     const tok = r.data.token;
     if (tok) state.tokens.signin = tok;
-
     if ((r.data.success === true || r.ok) && tok) {
       state.auth = tok;
-      const s = await api('GET', '/api/auth/session', null, tok);
-      if (s.data.account) {
-        const a = s.data.account;
-        $('#si-result').innerHTML = successCard('Signed in.', [
-          ['Client', esc(a.name) + ' · ' + esc(a.role)],
-          ['Email', esc(a.email)],
-          ['Balance', `<b class="mono">${money(s.data.balance)}</b>`],
-        ]);
-      }
+      state.session = r.data.user;
+      go('/dashboard');
     } else {
       err.textContent = r.data.message || 'Unable to sign in.';
       err.style.display = 'block';
@@ -354,21 +439,94 @@
   }
 
   // ---------------------------------------------------------------
+  // DASHBOARD  (authenticated client area)
+  // ---------------------------------------------------------------
+  routes['/dashboard'] = async () => {
+    if (!state.auth) {
+      view(`
+        ${sectionHead('Client area', 'Your private banking space.')}
+        <div class="card">
+          <p class="muted mb8">Sign in to open your account.</p>
+          <button class="btn primary" data-route="/signin">Sign in</button>
+        </div>`);
+      return;
+    }
+    const r = await api('GET', '/api/auth/session', null, state.auth);
+    if (!r.data.account) {
+      state.auth = null;
+      view(`
+        ${sectionHead('Client area', 'Your private banking space.')}
+        <div class="card">
+          <p class="muted mb8">Your session is no longer accepted. Sign in again.</p>
+          <button class="btn primary" data-route="/signin">Sign in</button>
+        </div>`);
+      return;
+    }
+    const a = r.data.account;
+    view(`
+      <div class="hero">
+        <div class="eyebrow">Client area</div>
+        <h1>Welcome back,<br>${esc(a.name.split(' ')[0])}.</h1>
+        <p>${esc(a.role === 'admin' ? 'Relationship administrator' : 'Private client')} · balance <b>${money(r.data.balance)}</b></p>
+      </div>
+
+      <div class="grid2" style="align-items:start; margin-top:44px">
+        <div class="card">
+          <div class="kv">
+            <div class="kv-r"><span>Status</span><b>Session active</b></div>
+            <div class="kv-r"><span>Client</span><b>${esc(a.name)}</b></div>
+            <div class="kv-r"><span>Email</span><b class="mono">${esc(a.email)}</b></div>
+            <div class="kv-r"><span>Role</span><b>${esc(a.role)}</b></div>
+            <div class="kv-r"><span>Available balance</span><b class="mono">${money(r.data.balance)}</b></div>
+          </div>
+          <div class="field" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:20px">
+            <button class="btn primary" data-route="/transfers">Transfer</button>
+            <button class="btn ghost" data-route="/verify">Two-step</button>
+            <button class="btn ghost" data-route="/devices">Devices</button>
+            <button class="btn ghost" data-route="/sessions">Sessions</button>
+          </div>
+          <div style="margin-top:18px">
+            <button class="btn danger xs" id="btn-out">Sign out</button>
+          </div>
+        </div>
+        <div class="card subtle">
+          <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Recent transactions</div>
+          ${r.data.transactions.map((t) => `
+            <div class="tx">
+              <div class="tx-ico ${t.dir === 'in' ? 'in' : 'out'}">${t.dir === 'in' ? '↓' : '↑'}</div>
+              <div style="min-width:0">
+                <div class="tx-name">${esc(t.counterparty)}</div>
+                <div class="tx-note">${t.dir === 'in' ? 'Incoming transfer' : 'Card payment'}</div>
+              </div>
+              <b class="mono ${t.dir === 'in' ? 'in' : 'out'}">${t.dir === 'in' ? '+' : '−'}${money(t.amount)}</b>
+            </div>`).join('')}
+        </div>
+      </div>`);
+    $('#btn-out').addEventListener('click', async () => {
+      await api('POST', '/api/session/revoke', { token: state.auth });
+      state.auth = null;
+      state.session = null;
+      toast('Signed out.', 'ok');
+      go('/');
+    });
+  };
+
+  // ---------------------------------------------------------------
   // TRANSFERS  (settles on rejected verdict)
   // ---------------------------------------------------------------
   routes['/transfers'] = async () => {
     if (!state.auth) {
       view(`
-        ${sectionHead('Transfers', 'Move value between treasuries. Settlement is instant.')}
-        <div class="card">
-          <p class="muted mb8">Sign in to authorise transfers.</p>
-          <button class="btn primary" data-route="/signin">Sign in</button>
-        </div>`);
+${caseHead(6)}
+      <div class="card">
+        <p class="muted mb8">Sign in to authorise transfers.</p>
+        <button class="btn primary" data-route="/signin">Sign in</button>
+      </div>`);
       return;
     }
     const s = await (await fetch('/api/transfers/balance', { headers: { Authorization: 'Bearer ' + state.auth } })).json();
     view(`
-      ${sectionHead('Transfers', 'Move value between treasuries. Settlement is instant.')}
+      ${caseHead(6)}
       <div class="grid2" style="align-items:start">
         <div class="card">
           <div class="spread" style="margin-bottom:18px">
@@ -446,7 +604,7 @@
   // ---------------------------------------------------------------
   routes['/verify'] = () => {
     view(`
-      ${sectionHead('Two-step verification', 'Enter the six-digit code sent to your device.')}
+      ${caseHead(4)}
       <div class="auth-wrap" style="margin-top:8px">
         <div class="card auth-card">
           <div class="err" id="v-err"></div>
@@ -510,7 +668,7 @@
   // ---------------------------------------------------------------
   routes['/devices'] = () => {
     view(`
-      ${sectionHead('Devices', 'Authorise a device to handle security codes and confirmations.')}
+      ${caseHead(5)}
       <div class="grid2" style="align-items:start">
         <div class="card">
           <div class="face-ring">
@@ -570,49 +728,23 @@
   }
 
   // ---------------------------------------------------------------
-  // SESSIONS  (logout ignored + recovery expired + support unsigned)
+  // CASE 03 — Session not revoked on logout
   // ---------------------------------------------------------------
   routes['/sessions'] = () => {
     view(`
-      ${sectionHead('Sessions', 'Review sessions, recovery tokens and support access.')}
-      <div class="grid2" style="align-items:start">
-
-        <div class="card">
-          <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Active sessions</div>
-          <div class="field" style="display:flex; gap:10px; flex-wrap:wrap">
-            <button class="btn primary sm" id="ss-issue">New session</button>
-            <button class="btn danger sm" id="ss-logout">Sign out</button>
-            <button class="btn gold sm" id="ss-check">Check session</button>
-          </div>
-          ${tokenBlock('Session token', 'ss-token', state.tokens.session)}
-          <div id="ss-result"></div>
+      ${caseHead(3)}
+      <div class="card" style="max-width:620px">
+        <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Setup</div>
+        <p class="muted tiny mb8">Step 1: issue a session. Step 2: sign it out. Step 3: present the same token again.</p>
+        <div class="field" style="display:flex; gap:10px; flex-wrap:wrap">
+          <button class="btn primary sm" id="ss-issue">New session</button>
+          <button class="btn danger sm" id="ss-logout">Sign out</button>
+          <button class="btn gold sm" id="ss-check">Check session</button>
         </div>
-
-        <div class="card">
-          <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Recovery tokens</div>
-          <p class="muted tiny" style="margin-bottom:14px">Issued when you contact support while travelling. Valid for a window, then retired.</p>
-          <div class="field" style="display:flex; gap:10px; flex-wrap:wrap">
-            <button class="btn primary sm" id="rc-issue">Issue recovery token</button>
-            <button class="btn gold sm" id="rc-use">Use token</button>
-          </div>
-          ${tokenBlock('Recovery token', 'rc-token', state.tokens.recovery)}
-          <div id="rc-result"></div>
-        </div>
-
-        <div class="card">
-          <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Support access</div>
-          <p class="muted tiny" style="margin-bottom:14px">Relationship managers use these pass-through tokens to assist on an account.</p>
-          <div class="field" style="display:flex; gap:10px; flex-wrap:wrap">
-            <button class="btn primary sm" id="sp-issue">Issue support token</button>
-            <button class="btn gold sm" id="sp-use">Use token</button>
-          </div>
-          ${tokenBlock('Support token', 'sp-token', state.tokens.support)}
-          <div id="sp-result"></div>
-        </div>
-
+        ${tokenBlock('Session token', 'ss-token', state.tokens.session)}
+        <div id="ss-result"></div>
       </div>`);
 
-    // active sessions
     $('#ss-token').addEventListener('input', () => clearMsgs('#ss-result'));
     $('#ss-issue').addEventListener('click', async () => {
       clearMsgs('#ss-result');
@@ -655,8 +787,25 @@
     $('#ss-copy').addEventListener('click', async () => {
       if (await copyText($('#ss-token').value.trim())) toast('Token copied.', 'ok');
     });
+  };
 
-    // recovery (expired)
+  // ---------------------------------------------------------------
+  // CASE 07 — Expired JWT accepted
+  // ---------------------------------------------------------------
+  routes['/recovery'] = () => {
+    view(`
+      ${caseHead(7)}
+      <div class="card" style="max-width:620px">
+        <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Setup</div>
+        <p class="muted tiny mb8">Request a recovery token, then present it. It retired before it was even issued.</p>
+        <div class="field" style="display:flex; gap:10px; flex-wrap:wrap">
+          <button class="btn primary sm" id="rc-issue">Issue recovery token</button>
+          <button class="btn gold sm" id="rc-use">Use token</button>
+        </div>
+        ${tokenBlock('Recovery token', 'rc-token', state.tokens.recovery)}
+        <div id="rc-result"></div>
+      </div>`);
+
     $('#rc-token').addEventListener('input', () => clearMsgs('#rc-result'));
     $('#rc-issue').addEventListener('click', async () => {
       clearMsgs('#rc-result');
@@ -666,7 +815,7 @@
         $('#rc-token').value = r.data.token;
         $('#rc-result').innerHTML = successCard('Recovery token issued.', [
           ['Client', esc(r.data.user.name)],
-          ['Retires', when(r.data.expiredAt)],
+          ['Retired at', when(r.data.expiredAt)],
         ]);
       }
     });
@@ -687,8 +836,25 @@
     $('#rc-copy').addEventListener('click', async () => {
       if (await copyText($('#rc-token').value.trim())) toast('Token copied.', 'ok');
     });
+  };
 
-    // support (unsigned)
+  // ---------------------------------------------------------------
+  // CASE 08 — Unsigned alg:none JWT
+  // ---------------------------------------------------------------
+  routes['/support'] = () => {
+    view(`
+      ${caseHead(8)}
+      <div class="card" style="max-width:620px">
+        <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Setup</div>
+        <p class="muted tiny mb8">Request a pass-through token, then present it. The signature is empty.</p>
+        <div class="field" style="display:flex; gap:10px; flex-wrap:wrap">
+          <button class="btn primary sm" id="sp-issue">Issue support token</button>
+          <button class="btn gold sm" id="sp-use">Use token</button>
+        </div>
+        ${tokenBlock('Support token', 'sp-token', state.tokens.support)}
+        <div id="sp-result"></div>
+      </div>`);
+
     $('#sp-token').addEventListener('input', () => clearMsgs('#sp-result'));
     $('#sp-issue').addEventListener('click', async () => {
       clearMsgs('#sp-result');
@@ -727,15 +893,15 @@
   routes['/access'] = () => {
     if (!state.auth) {
       view(`
-        ${sectionHead('Higher limits', 'Request an increase to your daily allowance. Manual review is required.')}
-        <div class="card">
-          <p class="muted mb8">Sign in to request higher limits.</p>
-          <button class="btn primary" data-route="/signin">Sign in</button>
-        </div>`);
+${caseHead(2)}
+      <div class="card">
+        <p class="muted mb8">Sign in to request higher limits.</p>
+        <button class="btn primary" data-route="/signin">Sign in</button>
+      </div>`);
       return;
     }
     view(`
-      ${sectionHead('Higher limits', 'Request an increase to your daily allowance. Manual review is required.')}
+      ${caseHead(2)}
       <div class="auth-wrap" style="margin-top:8px">
         <div class="card auth-card">
           <div class="err" id="a-err"></div>
