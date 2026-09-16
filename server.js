@@ -16,8 +16,6 @@ const CONFIG = {
   secret: 'velare-lab-secret-2e4b6a8c1d0f',
   // (vuln) revoked (logged-out) tokens are never cross-checked -> replay works
   checkRevocation: false,
-  // (vuln) amounts above this still execute server-side, response says rejected
-  dailyLimit: 5000,
 };
 
 // ============================================================
@@ -59,7 +57,6 @@ function freshLabs() {
     2: { id: 2, title: 'Envelope + body trust', group: 'Response-level trust', done: false },
     3: { id: 3, title: 'OTP verification bypass', group: 'Second factor', done: false },
     4: { id: 4, title: 'Device authorisation bypass', group: 'Second factor', done: false },
-    5: { id: 5, title: 'Transfer settles on rejected verdict', group: 'Transactions', done: false },
   };
 }
 
@@ -159,7 +156,7 @@ function mark(id) {
 
 const summary = () => {
   const out = [];
-  for (const k of [1, 2, 3, 4, 5]) {
+  for (const k of [1, 2, 3, 4]) {
     const l = labs[k];
     out.push({ id: l.id, title: l.title, group: l.group, done: l.done });
   }
@@ -397,47 +394,6 @@ route('GET', '/api/devices/session', (req, res) => {
     session: { email, name: u.name, factor: 'device', match: true },
     balance: balances[email],
   });
-});
-
-// ============================================================
-// CASE 06 — Transfer settles on rejected verdict
-// Over-limit transfers execute server-side and return 403 with a receipt.
-// Rewriting 403 -> 200 flips only the client's view; money already moved.
-// ============================================================
-route('POST', '/api/transfers/send', (req, res, body) => {
-  const sess = authenticate(bearer(req));
-  if (sess.error) return send(res, 401, { accepted: false, message: 'Not authenticated.' });
-
-  const { to, amount } = body;
-  const amt = Number(amount);
-  if (!to || !Number.isFinite(amt) || amt <= 0) return send(res, 400, { accepted: false, message: 'Invalid request.' });
-  if (!users[to]) return send(res, 400, { accepted: false, message: 'Recipient not found.', to });
-
-  const from = sess.payload.sub;
-  if (amt > balances[from]) return send(res, 402, { accepted: false, code: 'INSUFFICIENT_FUNDS', message: 'Insufficient funds.' });
-
-  const overLimit = amt > CONFIG.dailyLimit;
-  // Execution happens BEFORE the response decides the verdict.
-  balances[from] -= amt;
-  balances[to] += amt;
-  const receipt = { id: `rc-${randHex(6)}`, from, to, amount: amt, ts: Date.now(), status: 'cleared' };
-  ledger[from].unshift({ id: receipt.id, counterparty: users[to].name, amount: amt, dir: 'out', note: '', ts: receipt.ts, status: 'cleared' });
-  ledger[to].unshift({ id: receipt.id, counterparty: users[from].name, amount: amt, dir: 'in', note: '', ts: receipt.ts, status: 'cleared' });
-
-  if (overLimit) {
-    mark(5);
-    return send(res, 403, {
-      accepted: false, code: 'DAILY_LIMIT', message: 'Blocked by daily limit policy.',
-      receipt, // <-- the transfer already cleared server-side
-    });
-  }
-  send(res, 200, { accepted: true, message: 'Transfer completed.', receipt });
-});
-
-route('GET', '/api/transfers/balance', (req, res) => {
-  const sess = authenticate(bearer(req));
-  if (sess.error) return send(res, 401, { balance: 0 });
-  send(res, 200, { balance: balances[sess.payload.sub] });
 });
 
 // ============================================================

@@ -252,8 +252,6 @@
       desc: 'A wrong code returns verified:false but still ships a valid sessionToken. Flip the flag — or replay the same code — and the session holds.' },
     { id: 4, title: 'Device binding bypass', group: 'Second factor', diff: 'Apprentice', route: '/devices', ico: '⌘',
       desc: 'An unrecognised device still receives a session grant with match:false. Flip match → true and a device that was never enrolled is bound.' },
-    { id: 5, title: 'Settlement before verdict', group: 'Transactions', diff: 'Practitioner', route: '/transfers', ico: '⇄',
-      desc: 'Over-limit transfers execute server-side, then the API returns 403 with a receipt. The money moved before the verdict was written.' },
   ];
 
   function caseHead(id) {
@@ -270,17 +268,6 @@
             <span class="pill">Use the Interceptor (or own proxy) to edit the response</span>
           </div>
         </div>
-      </div>`;
-  }
-
-  function tokenBlock(label, id, value) {
-    return `
-      <div class="field">
-        <div class="spread" style="margin-bottom:6px">
-          <label style="margin:0">${label}</label>
-          <button class="btn ghost xs" id="${id}-copy">Copy</button>
-        </div>
-        <textarea class="input mono" id="${id}" rows="3" spellcheck="false" style="font-size:12px;resize:vertical">${value ? esc(value) : ''}</textarea>
       </div>`;
   }
 
@@ -486,8 +473,7 @@
             <div class="kv-r"><span>Available balance</span><b class="mono">${money(r.data.balance)}</b></div>
           </div>
           <div class="field" style="display:flex; gap:10px; flex-wrap:wrap; margin-top:20px">
-            <button class="btn primary" data-route="/transfers">Transfer</button>
-            <button class="btn ghost" data-route="/verify">Two-step</button>
+            <button class="btn primary" data-route="/verify">Two-step</button>
             <button class="btn ghost" data-route="/devices">Devices</button>
           </div>
           <div style="margin-top:18px">
@@ -515,94 +501,6 @@
       go('/');
     });
   };
-
-  // ---------------------------------------------------------------
-  // TRANSFERS  (settles on rejected verdict)
-  // ---------------------------------------------------------------
-  routes['/transfers'] = async () => {
-    if (!state.auth) {
-      view(`
-${caseHead(5)}
-      <div class="card">
-        <p class="muted mb8">Sign in to authorise transfers.</p>
-        <button class="btn primary" data-route="/signin">Sign in</button>
-      </div>`);
-      return;
-    }
-    const s = await (await fetch('/api/transfers/balance', { headers: { Authorization: 'Bearer ' + state.auth } })).json();
-    view(`
-      ${caseHead(5)}
-      <div class="grid2" style="align-items:start">
-        <div class="card">
-          <div class="spread" style="margin-bottom:18px">
-            <span class="muted tiny">Available balance</span>
-            <b class="mono">${money(s.balance)}</b>
-          </div>
-          <div class="err" id="tx-err"></div>
-          <div class="field">
-            <label>Recipient</label>
-            <input class="input" id="tx-to" value="nathan@velare.io" spellcheck="false">
-          </div>
-          <div class="field">
-            <label>Amount</label>
-            <div class="qty"><span>$</span><input id="tx-amt" inputmode="decimal" value="1200"></div>
-          </div>
-          <div class="field">
-            <label>Reference</label>
-            <input class="input" id="tx-note" placeholder="Optional note" spellcheck="false" value="Allocation">
-          </div>
-          <button class="btn primary" id="btn-tx" style="width:100%">Authorise transfer</button>
-          <div id="tx-result"></div>
-        </div>
-        <div class="card subtle">
-          <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Transfer details</div>
-          <ul class="tx-list">
-            <li class="tx"><div class="tx-ico in" style="background:transparent">◷</div><div style="min-width:0"><div class="tx-name">Settlement</div><div class="tx-note">Instant within Aurelia · same-day for scheduled flows</div></div></li>
-            <li class="tx"><div class="tx-ico out" style="background:transparent">c</div><div style="min-width:0"><div class="tx-name">Fees</div><div class="tx-note">No charge on internal treasuries</div></div></li>
-            <li class="tx"><div class="tx-ico in" style="background:transparent">≡</div><div style="min-width:0"><div class="tx-name">Reports</div><div class="tx-note">Confirmations appear in your statement</div></div></li>
-          </ul>
-        </div>
-      </div>`);
-
-    $('#btn-tx').addEventListener('click', doTransfer);
-    $('#tx-amt').addEventListener('keydown', (e) => e.key === 'Enter' && doTransfer());
-    $('#tx-note').addEventListener('keydown', (e) => e.key === 'Enter' && doTransfer());
-    ['#tx-to', '#tx-amt', '#tx-note'].forEach((sel) =>
-      $(sel).addEventListener('input', () => clearMsgs('#tx-err', '#tx-result')));
-  };
-
-  async function doTransfer() {
-    const to = $('#tx-to').value.trim().toLowerCase();
-    const amount = Number($('#tx-amt').value);
-    const note = $('#tx-note').value;
-    clearMsgs('#tx-err', '#tx-result');
-    const err = $('#tx-err');
-    const btn = $('#btn-tx'); btn.disabled = true; btn.textContent = 'Settling…';
-    const r = await api('POST', '/api/transfers/send', { to, amount, note }, state.auth);
-    btn.disabled = false; btn.textContent = 'Authorise transfer';
-
-    const bal = (await (await fetch('/api/transfers/balance', { headers: { Authorization: 'Bearer ' + state.auth } })).json()).balance;
-
-    if (r.ok && r.data.accepted) {
-      $('#tx-result').innerHTML = successCard('Transfer complete.', [
-        ['Receipt', `<span class="mono">${esc(r.data.receipt.id)}</span>`],
-        ['Amount', money(amount)],
-        ['New balance', `<span class="mono">${money(bal)}</span>`],
-      ]);
-    } else if (r.ok && r.data.receipt) {
-      $('#tx-result').innerHTML = successCard('Transfer complete.', [
-        ['Receipt', `<span class="mono">${esc(r.data.receipt.id)}</span>`],
-        ['Amount', money(amount)],
-        ['New balance', `<span class="mono">${money(bal)}</span>`],
-      ]);
-    } else if (r.data.receipt) {
-      err.textContent = r.data.message || 'We couldn\'t complete this transfer.';
-      err.style.display = 'block';
-    } else {
-      err.textContent = r.data.message || 'We couldn\'t complete this transfer.';
-      err.style.display = 'block';
-    }
-  }
 
   // ---------------------------------------------------------------
   // TWO-STEP VERIFICATION  (OTP bypass)
