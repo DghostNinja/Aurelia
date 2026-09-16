@@ -1,0 +1,13 @@
+{
+  "name": "velare-response-lab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aurelia / Velare — intentional response-manipulation training environment",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

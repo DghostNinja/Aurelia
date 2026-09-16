@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aurelia — Response-Integrity Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="grain"></div>
+<div class="bg-orbs"><i class="o1"></i><i class="o2"></i><i class="o3"></i></div>
+
+<header id="topbar" class="topbar">
+  <div class="brand" data-route="">
+    <span class="brand-mark"><i></i><i></i></span>
+    <span class="brand-word">AUR<span class="thin">ELIA</span></span>
+  </div>
+  <nav id="navbar" class="nav">
+    <a data-route="/">Overview</a>
+    <a data-route="/signin">Sign in</a>
+    <a data-route="/transfers">Transfers</a>
+    <a data-route="/verify">Two-step</a>
+    <a data-route="/devices">Devices</a>
+    <a data-route="/sessions">Sessions</a>
+    <a data-route="/access">Higher limits</a>
+  </nav>
+  <div class="top-right">
+    <button id="inspector-toggle" class="chip ghost" title="Built-in response editing. Turn off and use your own proxy (Burp, ZAP) instead.">Interceptor <span class="dot" id="proxy-dot"></span></button>
+  </div>
+</header>
+
+<main id="view" class="view"></main>
+
+<div id="interceptor" class="interceptor hidden">
+  <div class="ix-head">
+    <span class="ix-title">● RESPONSE INTERCEPTED</span>
+    <span class="ix-sub" id="ix-sub"></span>
+    <button class="ix-close" id="ix-close">✕</button>
+  </div>
+  <label class="ix-label">HTTP status</label>
+  <input id="ix-status" class="ix-input mono" value="200" spellcheck="false">
+  <label class="ix-label">Response body</label>
+  <textarea id="ix-body" class="ix-textarea mono" spellcheck="false"></textarea>
+  <div class="ix-actions">
+    <button class="btn ghost sm" id="ix-copy">Copy original body</button>
+    <button class="btn primary sm" id="ix-apply">Apply modified response</button>
+  </div>
+</div>
+
+<div id="proxy-log" class="proxy-log hidden">
+  <div class="pl-head">
+    <span class="pl-title">Proxy log</span>
+    <div>
+      <button class="btn ghost xs" id="pl-clear">Clear</button>
+      <button class="btn ghost xs" id="pl-close">Close</button>
+    </div>
+  </div>
+  <div id="pl-entries" class="pl-entries"></div>
+</div>
+
+<div id="toasts" class="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
