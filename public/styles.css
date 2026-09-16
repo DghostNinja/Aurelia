@@ -191,6 +191,12 @@ fieldset { border: none; margin-bottom: 20px; }
   outline: none; transition: border .2s;
 }
 .otp-dots input:focus { border-color: var(--gold-2); }
+.otp-dots input.ok { border-color: var(--green); color: var(--green); background: rgba(76,217,168,.08); }
+.btn.ok { background: rgba(76,217,168,.12); border: 1px solid var(--green); color: var(--green); }
+.verify-note {
+  margin-top: 14px; padding: 11px 14px; border-radius: 9px; font-size: 13px; line-height: 1.5;
+  border: 1px solid rgba(242,193,78,.35); background: rgba(242,193,78,.08); color: var(--amber);
+}
 .face-ring {
   width: 140px; height: 140px; margin: 10px auto 26px; border-radius: 50%;
   border: 1.5px dashed rgba(200,164,92,.5); position: relative; display: grid; place-items: center;

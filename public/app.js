@@ -18,7 +18,6 @@
   const money = (n) => (n ?? 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
   const short = (s, n = 30) => (s.length > n ? s.slice(0, n) + '…' : s);
   const pretty = (d) => JSON.stringify(d, null, 2);
-  const when = (t) => new Date(t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   // ---------------------------------------------------------------
   // toast
@@ -32,15 +31,32 @@
   }
 
   async function copyText(text) {
-    try { await navigator.clipboard.writeText(text); return true; }
-    catch {
-      const ta = document.createElement('textarea');
-      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.select();
-      let ok = false;
-      try { ok = document.execCommand('copy'); } catch { ok = false; }
-      ta.remove(); return ok;
-    }
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* fall through to legacy copy */ }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.opacity = '0'; ta.style.top = '0'; ta.style.left = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select(); ta.setSelectionRange(0, ta.value.length);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove(); return ok;
+  }
+
+  function copyButton(btn, readText, label) {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const text = (readText() || '').trim();
+      if (!text) { toast('Nothing to copy yet.', 'err'); return; }
+      const ok = await copyText(text);
+      btn.textContent = '✓ Copied'; btn.classList.add('ok');
+      setTimeout(() => { btn.textContent = label || 'Copy'; btn.classList.remove('ok'); }, 1600);
+      toast(ok ? 'Copied to clipboard.' : 'Clipboard blocked — select and copy manually.', ok ? 'ok' : 'err');
+    });
   }
 
   // ---------------------------------------------------------------
@@ -75,8 +91,11 @@
   $('#ix-copy').addEventListener('click', async () => {
     const original = $('#ix-body').dataset.original;
     $('#ix-body').value = original;
-    if (await copyText(original)) toast('Original body copied.', 'ok');
-    else toast('Couldn\'t write to clipboard.', 'err');
+    await copyText(original);
+    const b = $('#ix-copy');
+    b.textContent = '✓ Copied original'; b.classList.add('ok');
+    setTimeout(() => { b.textContent = 'Copy original body'; b.classList.remove('ok'); }, 1600);
+    toast('Original body restored and copied.', 'ok');
   });
 
   $('#ix-close').addEventListener('click', () => {
@@ -157,13 +176,6 @@
     const r = currentRoute();
     const fn = routes[r] || routes['/'];
     Promise.resolve(fn()).then(() => {
-      const navAuth = $('#nav-auth');
-      if (navAuth) {
-        const authed = !!state.auth;
-        navAuth.textContent = authed ? 'Account' : 'Sign in';
-        navAuth.dataset.route = authed ? '/dashboard' : '/signin';
-      }
-      $$('#navbar a').forEach((a) => a.classList.toggle('active', a.dataset.route === r));
       $('#view').scrollTop = 0;
       window.scrollTo(0, 0);
     });
@@ -236,18 +248,12 @@
       desc: 'The client trusts only the status line. A failed login still ships a signed JWT inside the 401 body — flipping 401 → 200 authenticates you.' },
     { id: 2, title: 'Envelope + body trust', group: 'Response-level trust', diff: 'Apprentice', route: '/access', ico: '▲',
       desc: 'The client validates the status line AND a body flag. Flipping the status to 200 alone does nothing — you must rewrite the error body too.' },
-    { id: 3, title: 'JWT that ignores logout', group: 'Session lifecycle', diff: 'Practitioner', route: '/sessions', ico: '◫',
-      desc: 'Signing out adds the token to a revoked set the server never checks. Issue a session, sign out, then keep using the same token.' },
-    { id: 4, title: 'OTP response manipulation', group: 'Second factor', diff: 'Apprentice', route: '/verify', ico: '⑂',
+    { id: 3, title: 'OTP response manipulation', group: 'Second factor', diff: 'Apprentice', route: '/verify', ico: '⑂',
       desc: 'A wrong code returns verified:false but still ships a valid sessionToken. Flip the flag — or replay the same code — and the session holds.' },
-    { id: 5, title: 'Device binding bypass', group: 'Second factor', diff: 'Apprentice', route: '/devices', ico: '⌘',
+    { id: 4, title: 'Device binding bypass', group: 'Second factor', diff: 'Apprentice', route: '/devices', ico: '⌘',
       desc: 'An unrecognised device still receives a session grant with match:false. Flip match → true and a device that was never enrolled is bound.' },
-    { id: 6, title: 'Settlement before verdict', group: 'Transactions', diff: 'Practitioner', route: '/transfers', ico: '⇄',
+    { id: 5, title: 'Settlement before verdict', group: 'Transactions', diff: 'Practitioner', route: '/transfers', ico: '⇄',
       desc: 'Over-limit transfers execute server-side, then the API returns 403 with a receipt. The money moved before the verdict was written.' },
-    { id: 7, title: 'Expired JWT accepted', group: 'Token integrity', diff: 'Apprentice', route: '/recovery', ico: '◯',
-      desc: 'Token expiry is never checked. A recovery token that already expired is still honoured when presented.' },
-    { id: 8, title: 'Unsigned alg:none JWT', group: 'Token integrity', diff: 'Expert', route: '/support', ico: '◍',
-      desc: 'The server accepts tokens with an empty signature. A forged admin token works anywhere it is presented.' },
   ];
 
   function caseHead(id) {
@@ -483,7 +489,6 @@
             <button class="btn primary" data-route="/transfers">Transfer</button>
             <button class="btn ghost" data-route="/verify">Two-step</button>
             <button class="btn ghost" data-route="/devices">Devices</button>
-            <button class="btn ghost" data-route="/sessions">Sessions</button>
           </div>
           <div style="margin-top:18px">
             <button class="btn danger xs" id="btn-out">Sign out</button>
@@ -517,7 +522,7 @@
   routes['/transfers'] = async () => {
     if (!state.auth) {
       view(`
-${caseHead(6)}
+${caseHead(5)}
       <div class="card">
         <p class="muted mb8">Sign in to authorise transfers.</p>
         <button class="btn primary" data-route="/signin">Sign in</button>
@@ -526,7 +531,7 @@ ${caseHead(6)}
     }
     const s = await (await fetch('/api/transfers/balance', { headers: { Authorization: 'Bearer ' + state.auth } })).json();
     view(`
-      ${caseHead(6)}
+      ${caseHead(5)}
       <div class="grid2" style="align-items:start">
         <div class="card">
           <div class="spread" style="margin-bottom:18px">
@@ -604,7 +609,7 @@ ${caseHead(6)}
   // ---------------------------------------------------------------
   routes['/verify'] = () => {
     view(`
-      ${caseHead(4)}
+      ${caseHead(3)}
       <div class="auth-wrap" style="margin-top:8px">
         <div class="card auth-card">
           <div class="err" id="v-err"></div>
@@ -649,6 +654,8 @@ ${caseHead(6)}
     if (tok) state.tokens.verify = tok;
 
     if (tok && r.data.verified === true) {
+      $$('.otp-dots input').forEach((b) => b.classList.add('ok'));
+      if (btn) { btn.textContent = '✓ Verified'; btn.classList.add('ok'); }
       const s = await api('GET', '/api/verify/status', null, tok);
       if (s.data.session) {
         $('#v-result').innerHTML = successCard('Identity verified.', [
@@ -657,6 +664,10 @@ ${caseHead(6)}
           ['Balance', `<span class="mono">${money(s.data.balance)}</span>`],
         ]);
       }
+    } else if (tok) {
+      err.textContent = r.data.message || 'That code doesn\'t match.';
+      err.style.display = 'block';
+      $('#v-result').innerHTML = `<div class="verify-note">Code rejected — but the response still shipped a valid session grant. You are now holding a working token despite the failed verdict.</div>`;
     } else {
       err.textContent = r.data.message || 'That code doesn\'t match.';
       err.style.display = 'block';
@@ -668,7 +679,7 @@ ${caseHead(6)}
   // ---------------------------------------------------------------
   routes['/devices'] = () => {
     view(`
-      ${caseHead(5)}
+      ${caseHead(4)}
       <div class="grid2" style="align-items:start">
         <div class="card">
           <div class="face-ring">
@@ -726,166 +737,6 @@ ${caseHead(6)}
       err.style.display = 'block';
     }
   }
-
-  // ---------------------------------------------------------------
-  // CASE 03 — Session not revoked on logout
-  // ---------------------------------------------------------------
-  routes['/sessions'] = () => {
-    view(`
-      ${caseHead(3)}
-      <div class="card" style="max-width:620px">
-        <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Setup</div>
-        <p class="muted tiny mb8">Step 1: issue a session. Step 2: sign it out. Step 3: present the same token again.</p>
-        <div class="field" style="display:flex; gap:10px; flex-wrap:wrap">
-          <button class="btn primary sm" id="ss-issue">New session</button>
-          <button class="btn danger sm" id="ss-logout">Sign out</button>
-          <button class="btn gold sm" id="ss-check">Check session</button>
-        </div>
-        ${tokenBlock('Session token', 'ss-token', state.tokens.session)}
-        <div id="ss-result"></div>
-      </div>`);
-
-    $('#ss-token').addEventListener('input', () => clearMsgs('#ss-result'));
-    $('#ss-issue').addEventListener('click', async () => {
-      clearMsgs('#ss-result');
-      const r = await api('GET', '/api/session/issue');
-      if (r.data.token) {
-        state.tokens.session = r.data.token;
-        $('#ss-token').value = r.data.token;
-        $('#ss-result').innerHTML = successCard('Session started.', [
-          ['Client', esc(r.data.user.name)],
-          ['Token', `<span class="mono">${short(r.data.token, 46)}</span>`],
-        ]);
-      }
-    });
-    $('#ss-logout').addEventListener('click', async () => {
-      clearMsgs('#ss-result');
-      const tok = $('#ss-token').value.trim();
-      if (!tok) return toast('No session to sign out.', 'err');
-      const r = await api('POST', '/api/session/revoke', { token: tok });
-      if (r.data.success) {
-        $('#ss-result').innerHTML = successCard('Signed out.', [
-          ['Status', 'Session closed'],
-        ]);
-      }
-    });
-    $('#ss-check').addEventListener('click', async () => {
-      clearMsgs('#ss-result');
-      const tok = $('#ss-token').value.trim();
-      if (!tok) return toast('No session to check.', 'err');
-      const r = await api('GET', '/api/session/check', null, tok);
-      if (r.data.session) {
-        $('#ss-result').innerHTML = successCard('Session active.', [
-          ['Client', esc(r.data.session.email)],
-          ['Balance', `<span class="mono">${money(r.data.balance)}</span>`],
-          ['Token', `<span class="mono">${short(r.data.session.jti, 12)}</span>`],
-        ]);
-      } else {
-        $('#ss-result').innerHTML = `<div class="kv"><div class="kv-r"><span>Status</span><b>Session closed</b></div></div>`;
-      }
-    });
-    $('#ss-copy').addEventListener('click', async () => {
-      if (await copyText($('#ss-token').value.trim())) toast('Token copied.', 'ok');
-    });
-  };
-
-  // ---------------------------------------------------------------
-  // CASE 07 — Expired JWT accepted
-  // ---------------------------------------------------------------
-  routes['/recovery'] = () => {
-    view(`
-      ${caseHead(7)}
-      <div class="card" style="max-width:620px">
-        <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Setup</div>
-        <p class="muted tiny mb8">Request a recovery token, then present it. It retired before it was even issued.</p>
-        <div class="field" style="display:flex; gap:10px; flex-wrap:wrap">
-          <button class="btn primary sm" id="rc-issue">Issue recovery token</button>
-          <button class="btn gold sm" id="rc-use">Use token</button>
-        </div>
-        ${tokenBlock('Recovery token', 'rc-token', state.tokens.recovery)}
-        <div id="rc-result"></div>
-      </div>`);
-
-    $('#rc-token').addEventListener('input', () => clearMsgs('#rc-result'));
-    $('#rc-issue').addEventListener('click', async () => {
-      clearMsgs('#rc-result');
-      const r = await api('GET', '/api/session/recovery');
-      if (r.data.token) {
-        state.tokens.recovery = r.data.token;
-        $('#rc-token').value = r.data.token;
-        $('#rc-result').innerHTML = successCard('Recovery token issued.', [
-          ['Client', esc(r.data.user.name)],
-          ['Retired at', when(r.data.expiredAt)],
-        ]);
-      }
-    });
-    $('#rc-use').addEventListener('click', async () => {
-      clearMsgs('#rc-result');
-      const tok = $('#rc-token').value.trim();
-      if (!tok) return toast('No token to use.', 'err');
-      const r = await api('GET', '/api/session/recover', null, tok);
-      if (r.data.session) {
-        $('#rc-result').innerHTML = successCard('Access restored.', [
-          ['Client', esc(r.data.session.name)],
-          ['Balance', `<span class="mono">${money(r.data.balance)}</span>`],
-        ]);
-      } else {
-        $('#rc-result').innerHTML = `<div class="kv"><div class="kv-r"><span>Status</span><b>Token not accepted</b></div></div>`;
-      }
-    });
-    $('#rc-copy').addEventListener('click', async () => {
-      if (await copyText($('#rc-token').value.trim())) toast('Token copied.', 'ok');
-    });
-  };
-
-  // ---------------------------------------------------------------
-  // CASE 08 — Unsigned alg:none JWT
-  // ---------------------------------------------------------------
-  routes['/support'] = () => {
-    view(`
-      ${caseHead(8)}
-      <div class="card" style="max-width:620px">
-        <div class="muted tiny mb8" style="letter-spacing:.2em;text-transform:uppercase;font-weight:600">Setup</div>
-        <p class="muted tiny mb8">Request a pass-through token, then present it. The signature is empty.</p>
-        <div class="field" style="display:flex; gap:10px; flex-wrap:wrap">
-          <button class="btn primary sm" id="sp-issue">Issue support token</button>
-          <button class="btn gold sm" id="sp-use">Use token</button>
-        </div>
-        ${tokenBlock('Support token', 'sp-token', state.tokens.support)}
-        <div id="sp-result"></div>
-      </div>`);
-
-    $('#sp-token').addEventListener('input', () => clearMsgs('#sp-result'));
-    $('#sp-issue').addEventListener('click', async () => {
-      clearMsgs('#sp-result');
-      const r = await api('GET', '/api/support/token');
-      if (r.data.token) {
-        state.tokens.support = r.data.token;
-        $('#sp-token').value = r.data.token;
-        $('#sp-result').innerHTML = successCard('Support token issued.', [
-          ['Advisor', esc(r.data.user.name)],
-        ]);
-      }
-    });
-    $('#sp-use').addEventListener('click', async () => {
-      clearMsgs('#sp-result');
-      const tok = $('#sp-token').value.trim();
-      if (!tok) return toast('No token to use.', 'err');
-      const r = await api('GET', '/api/support/session', null, tok);
-      if (r.data.session) {
-        $('#sp-result').innerHTML = successCard('Support access enabled.', [
-          ['Advisor', esc(r.data.session.name)],
-          ['Scope', esc(r.data.session.role)],
-          ['Balance', `<span class="mono">${money(r.data.balance)}</span>`],
-        ]);
-      } else {
-        $('#sp-result').innerHTML = `<div class="kv"><div class="kv-r"><span>Status</span><b>Token not accepted</b></div></div>`;
-      }
-    });
-    $('#sp-copy').addEventListener('click', async () => {
-      if (await copyText($('#sp-token').value.trim())) toast('Token copied.', 'ok');
-    });
-  };
 
   // ---------------------------------------------------------------
   // HIGHER LIMITS  (envelope + body trust)

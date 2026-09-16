@@ -14,10 +14,6 @@ const CONFIG = {
   host: '127.0.0.1',
   port: 3000,
   secret: 'velare-lab-secret-2e4b6a8c1d0f',
-  // (vuln) verification never checks token expiry -> expired JWTs are honoured
-  ignoreExpiration: true,
-  // (vuln) server accepts unsigned `alg:"none"` tokens -> forged identities
-  allowAlgNone: true,
   // (vuln) revoked (logged-out) tokens are never cross-checked -> replay works
   checkRevocation: false,
   // (vuln) amounts above this still execute server-side, response says rejected
@@ -55,18 +51,15 @@ const issued = []; // token vault: {jti, sub, via, exp, iat, used}
 let labs = freshLabs();
 
 // ============================================================
-// The 8 cases — each is a separate, self-contained scenario.
+// The 5 labs — each is a separate, self-contained scenario.
 // ============================================================
 function freshLabs() {
   return {
     1: { id: 1, title: 'Status code flip', group: 'Response-level trust', done: false },
     2: { id: 2, title: 'Envelope + body trust', group: 'Response-level trust', done: false },
-    3: { id: 3, title: 'JWT that ignores logout', group: 'Session lifecycle', done: false },
-    4: { id: 4, title: 'OTP verification bypass', group: 'Second factor', done: false },
-    5: { id: 5, title: 'Device authorisation bypass', group: 'Second factor', done: false },
-    6: { id: 6, title: 'Transfer settles on rejected verdict', group: 'Transactions', done: false },
-    7: { id: 7, title: 'Expired JWT still accepted', group: 'Token integrity', done: false },
-    8: { id: 8, title: 'Unsigned alg:none JWT', group: 'Token integrity', done: false },
+    3: { id: 3, title: 'OTP verification bypass', group: 'Second factor', done: false },
+    4: { id: 4, title: 'Device authorisation bypass', group: 'Second factor', done: false },
+    5: { id: 5, title: 'Transfer settles on rejected verdict', group: 'Transactions', done: false },
   };
 }
 
@@ -113,34 +106,24 @@ function sign(payload, expSeconds = 900, tokenRef) {
   return `${body}.${sig}`;
 }
 
-function signUnsigned(payload, tokenRef) {
-  const header = { alg: 'none', typ: 'JWT' };
-  payload = { ...payload, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 900, jti: randHex(8) };
-  issued.unshift({ jti: payload.jti, sub: payload.sub, via: payload.via, exp: payload.exp, iat: payload.iat, ns: 'unsigned', tokenRef });
-  return `${b64u(header)}.${b64u(payload)}.`;
-}
-
 function verify(token) {
   const parts = (token || '').split('.');
-  if (parts.length < 2) throw new Error('MALFORMED_TOKEN');
+  if (parts.length !== 3) throw new Error('MALFORMED_TOKEN');
   const header = b64uDec(parts[0]);
   const payload = b64uDec(parts[1]);
 
-  if (header.alg === 'none') {
-    if (!CONFIG.allowAlgNone) throw new Error('ALG_NONE_REJECTED');
-  } else if (header.alg === 'HS256') {
-    const expected = crypto.createHmac('sha256', CONFIG.secret)
-      .update(`${parts[0]}.${parts[1]}`).digest('base64url');
-    const given = parts[2];
-    if (!given || given.length !== expected.length ||
-        !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected))) {
-      throw new Error('BAD_SIGNATURE');
-    }
-  } else {
-    throw new Error('UNSUPPORTED_ALG ' + header.alg);
+  if (header.alg === 'none' || !parts[2]) throw new Error('UNSIGNED_TOKEN');
+  if (header.alg !== 'HS256') throw new Error('UNSUPPORTED_ALG ' + header.alg);
+
+  const expected = crypto.createHmac('sha256', CONFIG.secret)
+    .update(`${parts[0]}.${parts[1]}`).digest('base64url');
+  const given = parts[2];
+  if (!given || given.length !== expected.length ||
+      !crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected))) {
+    throw new Error('BAD_SIGNATURE');
   }
 
-  if (CONFIG.ignoreExpiration !== true && payload.exp && payload.exp * 1000 < Date.now()) {
+  if (payload.exp && payload.exp * 1000 < Date.now()) {
     throw new Error('TOKEN_EXPIRED');
   }
   return payload;
@@ -176,7 +159,7 @@ function mark(id) {
 
 const summary = () => {
   const out = [];
-  for (const k of [1, 2, 3, 4, 5, 6, 7, 8]) {
+  for (const k of [1, 2, 3, 4, 5]) {
     const l = labs[k];
     out.push({ id: l.id, title: l.title, group: l.group, done: l.done });
   }
@@ -191,15 +174,13 @@ function authenticate(token) {
     const payload = verify(token);
     const entry = issued.find((t) => t.jti === payload.jti);
 
-    if (payload.exp && payload.exp * 1000 < Date.now()) mark(7);            // expired accepted
-    if (!entry || entry.ns === 'unsigned') mark(8);                          // forged accepted
     if (payload.via === 'login_fail') mark(1);                               // failed-login session accepted
     if (payload.via === 'unlock_fail') mark(2);                              // rejected-unlock session accepted
-    if (payload.via === 'otp_fail') mark(4);                                 // unverified OTP session accepted
-    if (payload.via === 'device_fail') mark(5);                              // unmatched device session accepted
+    if (payload.via === 'otp_fail') mark(3);                                 // unverified OTP session accepted
+    if (payload.via === 'device_fail') mark(4);                              // unmatched device session accepted
     if (entry && revoked.has(payload.jti)) {
+      // (vuln, untracked) logged-out tokens are still accepted
       if (CONFIG.checkRevocation) return { error: 'TOKEN_REVOKED' };
-      mark(3);                                                              // logged-out session accepted
     }
     if (entry) entry.used = true;
     if (!users[payload.sub]) return { error: 'UNKNOWN_SUBJECT' };
@@ -444,7 +425,7 @@ route('POST', '/api/transfers/send', (req, res, body) => {
   ledger[to].unshift({ id: receipt.id, counterparty: users[from].name, amount: amt, dir: 'in', note: '', ts: receipt.ts, status: 'cleared' });
 
   if (overLimit) {
-    mark(6);
+    mark(5);
     return send(res, 403, {
       accepted: false, code: 'DAILY_LIMIT', message: 'Blocked by daily limit policy.',
       receipt, // <-- the transfer already cleared server-side
@@ -460,66 +441,13 @@ route('GET', '/api/transfers/balance', (req, res) => {
 });
 
 // ============================================================
-// CASE 07 — Expired JWT still accepted
-// A token that already expired keeps working because expiry is never
-// checked. Serve one, then use it.
-// ============================================================
-route('GET', '/api/session/recovery', (req, res) => {
-  const u = users['alice@velare.io'];
-  const token = sign({ sub: u.email, via: 'case7', name: u.name, role: u.role }, -120, 'c7');
-  send(res, 200, { token, expiredAt: (Math.floor(Date.now() / 1000) - 120) * 1000, user: { email: u.email, name: u.name } });
-});
-
-route('GET', '/api/session/recover', (req, res) => {
-  const sess = authenticate(bearer(req));
-  if (sess.error) return send(res, 401, { authorized: false, message: 'Not authenticated.' });
-  const email = sess.payload.sub;
-  const u = users[email];
-  send(res, 200, {
-    authorized: true,
-    session: { email, name: u.name, jti: sess.payload.jti, exp: sess.payload.exp * 1000, expired: true },
-    balance: balances[email],
-  });
-});
-
-// ============================================================
-// CASE 08 — Unsigned alg:none JWT
-// The server accepts tokens with an empty signature. A "forged" admin token
-// is issued on request — paste it anywhere and it works.
-// ============================================================
-route('GET', '/api/support/token', (req, res) => {
-  const admin = users['admin@velare.io'];
-  const token = signUnsigned({ sub: admin.email, via: 'case8', name: admin.name, role: 'admin' }, 'c8');
-  send(res, 200, { token, user: { email: admin.email, name: admin.name, role: 'admin' } });
-});
-
-route('GET', '/api/support/session', (req, res) => {
-  const sess = authenticate(bearer(req));
-  if (sess.error) return send(res, 401, { authorized: false, message: 'Not authenticated.' });
-  const email = sess.payload.sub;
-  const u = users[email];
-  send(res, 200, {
-    authorized: true,
-    session: { email, name: u.name, role: u.role, signed: false, jti: sess.payload.jti },
-    balance: balances[email],
-    vault: { permits: ['account_admin', 'hsm_rotate', 'payout_release'] },
-  });
-});
-
-// ============================================================
 // Lab-wide endpoints
 // ============================================================
 route('GET', '/api/meta', (req, res) =>
   send(res, 200, { cases: summary() }));
 
 route('GET', '/api/labs/artifacts', (req, res) =>
-  send(res, 200, {
-    vault: [
-      { id: 'c3-live', caseId: 3, kind: 'a token you are already holding' },
-      { id: 'c7-expired', caseId: 7, kind: 'expired before you signed out' },
-      { id: 'c8-forged', caseId: 8, kind: 'no signature at all' },
-    ],
-  }));
+  send(res, 200, { vault: [] }));
 
 route('POST', '/api/meta/reset', (req, res) => {
   reseed();
@@ -596,7 +524,7 @@ server.listen(CONFIG.port, CONFIG.host, () => {
   console.log('  AURELIA — response-integrity case lab');
   console.log('  ──────────────────────────────────────');
   console.log(`  local : http://${CONFIG.host}:${CONFIG.port}`);
-  console.log('  cases : 8 independent scenarios, open /api/meta');
+  console.log('  cases : 5 independent scenarios, open /api/meta');
   console.log('  creds : alice@velare.io / Aurora!2026   (admin: admin@velare.io / Vault!Admin2026)');
   console.log('  otp   : 603391 · 772014 · 915562       (alice · nathan · admin)');
   console.log('  face  : mbp7f3 · xps12a · lob9c         (alice · nathan · admin)');
