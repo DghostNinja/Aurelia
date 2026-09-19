@@ -424,6 +424,7 @@
     if ((r.data.success === true || r.ok) && tok) {
       state.auth = tok;
       state.session = r.data.user;
+      btn.textContent = 'Signed in'; btn.classList.add('ok');
       go('/dashboard');
     } else {
       err.textContent = r.data.message || 'Unable to sign in.';
@@ -565,7 +566,6 @@
     } else if (tok) {
       err.textContent = r.data.message || 'That code doesn\'t match.';
       err.style.display = 'block';
-      $('#v-result').innerHTML = `<div class="verify-note">Code rejected — but the response still shipped a valid session grant. You are now holding a working token despite the failed verdict.</div>`;
     } else {
       err.textContent = r.data.message || 'That code doesn\'t match.';
       err.style.display = 'block';
@@ -622,6 +622,7 @@
     if (tok) state.tokens.device = tok;
 
     if (tok && r.data.match === true) {
+      btn.textContent = 'Device bound'; btn.classList.add('ok');
       const s = await api('GET', '/api/devices/session', null, tok);
       if (s.data.session) {
         $('#d-result').innerHTML = successCard('Device authorised.', [
@@ -683,6 +684,7 @@ ${caseHead(2)}
     if (session) state.tokens.access = session;
 
     if (r.ok && r.data.unlocked === true && session) {
+      btn.textContent = 'Approved'; btn.classList.add('ok');
       const s = await api('GET', '/api/limits/status', null, session);
       if (s.data.panel) {
         const p = s.data.panel;

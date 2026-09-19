@@ -137,7 +137,7 @@ const send = (res, status, body) => {
       'X-Content-Type-Options': 'nosniff',
     });
   }
-  res.end(JSON.stringify(body));
+  res.end(JSON.stringify(body, null, 2));
 };
 
 const money = (n) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
